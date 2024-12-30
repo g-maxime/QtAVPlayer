@@ -12,16 +12,146 @@
 #include "qavhwdevice_p.h"
 #include <QSize>
 #ifdef QT_AVPLAYER_MULTIMEDIA
-    #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-        #include <QAbstractVideoSurface>
-    #else
-        #if QT_VERSION < QT_VERSION_CHECK(6, 8, 0)
-            #include <QtMultimedia/private/qabstractvideobuffer_p.h>
-        #else
-            #include <QtMultimedia/private/qhwvideobuffer_p.h>
-        #endif // #if QT_VERSION < QT_VERSION_CHECK(6, 8, 0)
-        #include <QtMultimedia/private/qvideotexturehelper_p.h>
-    #endif // #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+#include <QAbstractVideoSurface>
+#else
+#if QT_VERSION < QT_VERSION_CHECK(6, 8, 0)
+#include <QtMultimedia/qtmultimediaglobal.h>
+#include <QtMultimedia/qvideoframe.h>
+
+#include <QtCore/qmetatype.h>
+#include <QtGui/qmatrix4x4.h>
+#include <QtCore/private/qglobal_p.h>
+
+#include <memory>
+
+QT_BEGIN_NAMESPACE
+
+
+class QVariant;
+class QRhi;
+class QRhiTexture;
+
+class Q_MULTIMEDIA_EXPORT QVideoFrameTextures
+{
+public:
+    virtual ~QVideoFrameTextures() {}
+    virtual QRhiTexture *texture(uint plane) const = 0;
+};
+
+class Q_MULTIMEDIA_EXPORT QAbstractVideoBuffer
+{
+public:
+    QAbstractVideoBuffer(QVideoFrame::HandleType type, QRhi *rhi = nullptr);
+    virtual ~QAbstractVideoBuffer();
+
+    QVideoFrame::HandleType handleType() const;
+    QRhi *rhi() const;
+
+    struct MapData
+    {
+        int nPlanes = 0;
+        int bytesPerLine[4] = {};
+        uchar *data[4] = {};
+        int size[4] = {};
+    };
+
+    virtual QVideoFrame::MapMode mapMode() const = 0;
+    virtual MapData map(QVideoFrame::MapMode mode) = 0;
+    virtual void unmap() = 0;
+
+    virtual std::unique_ptr<QVideoFrameTextures> mapTextures(QRhi *) { return {}; }
+    virtual quint64 textureHandle(int /*plane*/) const { return 0; }
+
+    virtual QMatrix4x4 externalTextureMatrix() const { return {}; }
+protected:
+    QVideoFrame::HandleType m_type;
+    QRhi *m_rhi = nullptr;
+
+private:
+    Q_DISABLE_COPY(QAbstractVideoBuffer)
+};
+
+#ifndef QT_NO_DEBUG_STREAM
+Q_MULTIMEDIA_EXPORT QDebug operator<<(QDebug, QVideoFrame::MapMode);
+#endif
+
+QT_END_NAMESPACE
+#else
+#include <QtMultimedia/private/qhwvideobuffer_p.h>
+#endif
+#include <qvideoframeformat.h>
+#include <private/qrhi_p.h>
+#include <QtGui/qtextlayout.h>
+
+QT_BEGIN_NAMESPACE
+class QVideoFrame;
+class QTextLayout;
+class QVideoFrameTextures;
+
+namespace QVideoTextureHelper
+{
+
+struct TextureDescription
+{
+    static constexpr int maxPlanes = 3;
+    struct SizeScale {
+        int x;
+        int y;
+    };
+    using BytesRequired = int(*)(int stride, int height);
+
+    inline int strideForWidth(int width) const { return (width*strideFactor + 15) & ~15; }
+    inline int bytesForSize(QSize s) const { return bytesRequired(strideForWidth(s.width()), s.height()); }
+    int widthForPlane(int width, int plane) const
+    {
+        if (plane > nplanes) return 0;
+        return (width + sizeScale[plane].x - 1)/sizeScale[plane].x;
+    }
+    int heightForPlane(int height, int plane) const
+    {
+        if (plane > nplanes) return 0;
+        return (height + sizeScale[plane].y - 1)/sizeScale[plane].y;
+    }
+
+    int nplanes;
+    int strideFactor;
+    BytesRequired bytesRequired;
+    QRhiTexture::Format textureFormat[maxPlanes];
+    SizeScale sizeScale[maxPlanes];
+};
+
+Q_MULTIMEDIA_EXPORT const TextureDescription *textureDescription(QVideoFrameFormat::PixelFormat format);
+
+Q_MULTIMEDIA_EXPORT QString vertexShaderFileName(const QVideoFrameFormat &format);
+Q_MULTIMEDIA_EXPORT QString fragmentShaderFileName(const QVideoFrameFormat &format, QRhiSwapChain::Format surfaceFormat = QRhiSwapChain::SDR);
+Q_MULTIMEDIA_EXPORT void updateUniformData(QByteArray *dst, const QVideoFrameFormat &format, const QVideoFrame &frame,
+                                           const QMatrix4x4 &transform, float opacity, float maxNits = 100);
+Q_MULTIMEDIA_EXPORT std::unique_ptr<QVideoFrameTextures> createTextures(QVideoFrame &frame, QRhi *rhi, QRhiResourceUpdateBatch *rub, std::unique_ptr<QVideoFrameTextures> &&oldTextures);
+
+struct UniformData {
+    float transformMatrix[4][4];
+    float colorMatrix[4][4];
+    float opacity;
+    float width;
+    float masteringWhite;
+    float maxLum;
+};
+
+struct Q_MULTIMEDIA_EXPORT SubtitleLayout
+{
+    QSize videoSize;
+    QRectF bounds;
+    QTextLayout layout;
+
+    bool update(const QSize &frameSize, QString text);
+    void draw(QPainter *painter, const QPointF &translate) const;
+    QImage toImage() const;
+};
+
+}
+QT_END_NAMESPACE
+#endif // #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
 #endif // #ifdef QT_AVPLAYER_MULTIMEDIA
 #include <QDebug>
 
